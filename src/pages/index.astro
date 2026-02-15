@@ -1,0 +1,622 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { Redis } from '@upstash/redis';
+
+// 1. Connect to Upstash securely using your .env file
+const redis = new Redis({
+	url: import.meta.env.UPSTASH_REDIS_REST_URL,
+	token: import.meta.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+// 2. Fetch the data from the cloud using your key 'alunaria-codex'
+let cloudData = null;
+try {
+	cloudData = await redis.get('alunaria-codex');
+	console.log("SERVER: Successfully fetched from Upstash. Keys found:", cloudData ? Object.keys(cloudData) : "NONE");
+} catch (e) {
+	console.error("SERVER ERROR: Could not connect to Upstash:", e.message);
+}
+
+// 3. Failsafe: provide an empty skeleton if the database is empty or fetch fails
+if (!cloudData) {
+	cloudData = {
+		atlasData: {}, locationsData: {}, factionsData: {},
+		npcData: {}, loreData: {}, traitsData: {},
+		skillsData: {}, abilitiesData: {}
+	};
+}
+---
+
+<Layout title="Game Atlas & Codex">
+	<div class="sidebar">
+		<h1>CODEX</h1>
+		<button class="nav-btn active" data-tab="atlas">Atlas (Map)</button>
+		<button class="nav-btn" data-tab="locations">Locations</button>
+		<button class="nav-btn" data-tab="factions">Factions</button>
+		<button class="nav-btn" data-tab="npcs">NPCs</button>
+		<button class="nav-btn" data-tab="lore">Lore</button>
+		<button class="nav-btn" data-tab="traits">Traits</button>
+		<button class="nav-btn" data-tab="skills">Skills</button>
+		<button class="nav-btn" data-tab="abilities">Abilities</button>
+	</div>
+
+	<div class="main-content">
+		<div class="filter-bar" id="filterBar"></div>
+		<div class="content-scroll" id="contentArea"></div>
+	</div>
+
+	<div class="modal" id="detailModal">
+		<div class="modal-content">
+			<span class="close-modal" id="closeModalBtn">&times;</span>
+			<div id="modalBody"></div>
+		</div>
+	</div>
+
+	<script is:inline define:vars={{ cloudData }}>
+		window.CLOUD_CODEX_DATA = cloudData;
+		console.log("BROWSER: Data received from server:", window.CLOUD_CODEX_DATA);
+	</script>
+
+	<script>
+		// --- GLOBAL DATA SCOPE ---
+		// We assign these to the window object so all functions can access them regardless of scope
+		const data = window.CLOUD_CODEX_DATA || {};
+
+		window.atlasData = data.atlasData || {};
+		window.locationsData = data.locationsData || {};
+		window.factionsData = data.factionsData || {};
+		window.npcData = data.npcData || {};
+		window.loreData = data.loreData || {};
+		window.traitsData = data.traitsData || {};
+		window.skillsData = data.skillsData || {};
+		window.abilitiesData = data.abilitiesData || {};
+
+		let currentTab = 'atlas';
+		let currentGenericData = {};
+
+		// --- GLOBAL EVENT LISTENERS ---
+		function initEvents() {
+			document.querySelectorAll('.nav-btn').forEach(btn => {
+				btn.addEventListener('click', (e) => {
+					const tab = e.currentTarget.dataset.tab;
+					if (tab) switchTab(tab);
+				});
+			});
+
+			const modal = document.getElementById('detailModal');
+			const closeBtn = document.getElementById('closeModalBtn');
+
+			if (closeBtn) {
+				closeBtn.addEventListener('click', closeModal);
+			}
+
+			window.addEventListener('click', (e) => {
+				if (e.target === modal) closeModal();
+			});
+		}
+
+		function switchTab(tab) {
+			currentTab = tab;
+
+			document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+			const activeBtn = document.querySelector(`.nav-btn[data-tab="${tab}"]`);
+			if (activeBtn) activeBtn.classList.add('active');
+
+			const filterBar = document.getElementById('filterBar');
+			const contentArea = document.getElementById('contentArea');
+			if (filterBar) filterBar.innerHTML = '';
+			if (contentArea) {
+				contentArea.innerHTML = '';
+				contentArea.className = 'content-scroll';
+			}
+
+			if (tab === 'atlas') renderAtlas();
+			else if (tab === 'locations') renderLocations();
+			else if (tab === 'factions') renderGenericCards(window.factionsData, 'faction', 'factions');
+			else if (tab === 'npcs') renderNPCs();
+			else if (tab === 'lore') renderGenericCards(window.loreData, 'Lore', 'lore');
+			else if (tab === 'traits') renderGenericCards(window.traitsData, 'trait', 'traits');
+			else if (tab === 'skills') renderSkills();
+			else if (tab === 'abilities') renderAbilities();
+		}
+
+		function matchesSearch(obj, term) {
+			if (!term) return true;
+			return JSON.stringify(obj).toLowerCase().includes(term.toLowerCase());
+		}
+
+		// ==========================================
+		// MAP RENDERING
+		// ==========================================
+		function renderAtlas() {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			container.style.padding = "0";
+			filterBar.innerHTML = `<input type="text" class="search-input" id="atlasSearch" placeholder="Search Atlas...">`;
+
+			const searchInput = document.getElementById('atlasSearch');
+			if (searchInput) searchInput.addEventListener('input', filterAtlas);
+
+			const viewport = document.createElement('div');
+			viewport.className = 'map-viewport';
+			viewport.id = 'mapViewport';
+
+			const canvas = document.createElement('div');
+			canvas.className = 'map-canvas';
+			canvas.id = 'mapCanvas';
+
+			viewport.appendChild(canvas);
+
+			const btn = document.createElement('button');
+			btn.className = 'recenter-btn';
+			btn.innerText = "Recenter Map (0,0)";
+			btn.addEventListener('click', () => {
+				const centerOffset = 2500;
+				viewport.scrollTop = centerOffset - (viewport.clientHeight / 2) + 60;
+				viewport.scrollLeft = centerOffset - (viewport.clientWidth / 2) + 60;
+			});
+
+			container.appendChild(btn);
+			container.appendChild(viewport);
+
+			filterAtlas();
+
+			setTimeout(() => {
+				const centerOffset = 2500;
+				viewport.scrollTop = centerOffset - (viewport.clientHeight / 2) + 60;
+				viewport.scrollLeft = centerOffset - (viewport.clientWidth / 2) + 60;
+			}, 50);
+		}
+
+		function filterAtlas() {
+			const canvas = document.getElementById('mapCanvas');
+			if (!canvas) return;
+			canvas.innerHTML = '';
+
+			const searchInput = document.getElementById('atlasSearch');
+			const searchVal = searchInput ? searchInput.value : '';
+			const tileSize = 120;
+			const canvasCenter = 2500;
+
+			Object.values(window.atlasData).forEach(region => {
+				if(!matchesSearch(region, searchVal)) return;
+
+				const tile = document.createElement('div');
+				tile.className = `map-tile ${region.known === false ? 'unknown' : ''}`;
+
+				const leftPos = canvasCenter + (region.x * tileSize);
+				const topPos = canvasCenter - (region.y * tileSize);
+
+				tile.style.left = `${leftPos}px`;
+				tile.style.top = `${topPos}px`;
+
+				let secretIcon = "";
+				if(region.hiddenInfo && region.hiddenInfo.trim() !== "") {
+					secretIcon = `<div class="secret-indicator">?</div>`;
+				}
+
+				tile.innerHTML = `
+                ${secretIcon}
+                <div>${region.name}</div>
+                <div style="font-size:0.7rem; font-weight:normal; margin-top:5px;">(${region.x}, ${region.y})</div>
+            `;
+
+				tile.addEventListener('click', () => showDetails(region));
+				canvas.appendChild(tile);
+			});
+		}
+
+		// ==========================================
+		// OTHER RENDERERS
+		// ==========================================
+		function renderNPCs() {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			const npcs = Object.values(window.npcData || {});
+			const races = [...new Set(npcs.map(n => n.type))].filter(Boolean);
+			const tiers = [...new Set(npcs.map(n => n.tier))].filter(Boolean);
+			const locs = [...new Set(npcs.map(n => n.currentLocation))].filter(Boolean);
+
+			filterBar.innerHTML = `
+            <input type="text" class="search-input" id="npcSearch" placeholder="Search NPCs...">
+            <select class="filter-select" id="raceFilter">
+                <option value="all">All Races</option>
+                ${races.map(r => `<option value="${r}">${r}</option>`).join('')}
+            </select>
+            <select class="filter-select" id="tierFilter">
+                <option value="all">All Tiers</option>
+                ${tiers.map(t => `<option value="${t}">${t}</option>`).join('')}
+            </select>
+            <select class="filter-select" id="locFilter">
+                <option value="all">All Locations</option>
+                ${locs.map(l => `<option value="${l}">${l}</option>`).join('')}
+            </select>
+        `;
+
+			document.getElementById('npcSearch')?.addEventListener('input', filterNPCs);
+			document.getElementById('raceFilter')?.addEventListener('change', filterNPCs);
+			document.getElementById('tierFilter')?.addEventListener('change', filterNPCs);
+			document.getElementById('locFilter')?.addEventListener('change', filterNPCs);
+
+			const grid = document.createElement('div');
+			grid.id = "npcGrid";
+			grid.className = 'card-grid';
+			container.appendChild(grid);
+			filterNPCs();
+		}
+
+		function filterNPCs() {
+			const searchInput = document.getElementById('npcSearch');
+			const raceFilter = document.getElementById('raceFilter');
+			const tierFilter = document.getElementById('tierFilter');
+			const locFilter = document.getElementById('locFilter');
+
+			const searchVal = searchInput ? searchInput.value : '';
+			const raceVal = raceFilter ? raceFilter.value : 'all';
+			const tierVal = tierFilter ? tierFilter.value : 'all';
+			const locVal = locFilter ? locFilter.value : 'all';
+
+			const grid = document.getElementById('npcGrid');
+			if (!grid) return;
+			grid.innerHTML = '';
+
+			Object.values(window.npcData || {}).forEach(npc => {
+				if (!matchesSearch(npc, searchVal)) return;
+				if (raceVal !== 'all' && npc.type !== raceVal) return;
+				if (tierVal !== 'all' && npc.tier !== tierVal) return;
+				if (locVal !== 'all' && npc.currentLocation !== locVal) return;
+
+				const card = createCard(npc);
+				const cardBody = card.querySelector('.card-body');
+				const tagsDiv = document.createElement('div');
+
+				let tagHTML = '';
+				if(npc.currentLocation) tagHTML += `<span class="tag faction">${npc.currentLocation}</span>`;
+				if(npc.tier) tagHTML += `<span class="tag tier">${npc.tier}</span>`;
+				if(npc.type) tagHTML += `<span class="tag race">${npc.type}</span>`;
+
+				tagsDiv.innerHTML = tagHTML;
+				cardBody?.prepend(tagsDiv);
+
+				grid.appendChild(card);
+			});
+		}
+
+		function renderLocations() {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			const locs = Object.values(window.locationsData || {});
+			const regions = [...new Set(locs.map(l => l.region))].filter(Boolean);
+
+			filterBar.innerHTML = `
+            <input type="text" class="search-input" id="locSearch" placeholder="Search Locations...">
+            <select class="filter-select" id="regionFilter">
+                <option value="all">All Regions</option>
+                ${regions.map(r => `<option value="${r}">${r}</option>`).join('')}
+            </select>
+        `;
+
+			document.getElementById('locSearch')?.addEventListener('input', filterLocations);
+			document.getElementById('regionFilter')?.addEventListener('change', filterLocations);
+
+			const grid = document.createElement('div');
+			grid.id = "locGrid";
+			grid.className = 'card-grid';
+			container.appendChild(grid);
+			filterLocations();
+		}
+
+		function filterLocations() {
+			const searchInput = document.getElementById('locSearch');
+			const regionFilter = document.getElementById('regionFilter');
+
+			const searchVal = searchInput ? searchInput.value : '';
+			const regVal = regionFilter ? regionFilter.value : 'all';
+
+			const grid = document.getElementById('locGrid');
+			if (!grid) return;
+			grid.innerHTML = '';
+
+			Object.values(window.locationsData || {}).forEach(loc => {
+				if (!matchesSearch(loc, searchVal)) return;
+				if (regVal !== 'all' && loc.region !== regVal) return;
+				const card = createCard(loc);
+				const tagDiv = document.createElement('div');
+				if(loc.region) tagDiv.innerHTML = `<span class="tag faction">${loc.region}</span>`;
+				card.querySelector('.card-body')?.prepend(tagDiv);
+				grid.appendChild(card);
+			});
+		}
+
+		function renderSkills() {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			const skills = Object.values(window.skillsData || {});
+			const types = [...new Set(skills.map(s => s.type))].filter(Boolean);
+
+			filterBar.innerHTML = `
+            <input type="text" class="search-input" id="skillSearch" placeholder="Search Skills...">
+            <select class="filter-select" id="skillTypeFilter">
+                <option value="all">All Types</option>
+                ${types.map(t => `<option value="${t}">${t}</option>`).join('')}
+            </select>
+        `;
+
+			document.getElementById('skillSearch')?.addEventListener('input', filterSkills);
+			document.getElementById('skillTypeFilter')?.addEventListener('change', filterSkills);
+
+			const grid = document.createElement('div');
+			grid.id = 'skillGrid';
+			grid.className = 'card-grid';
+			container.appendChild(grid);
+			filterSkills();
+		}
+
+		function filterSkills() {
+			const searchInput = document.getElementById('skillSearch');
+			const typeFilter = document.getElementById('skillTypeFilter');
+
+			const searchVal = searchInput ? searchInput.value : '';
+			const typeVal = typeFilter ? typeFilter.value : 'all';
+
+			const grid = document.getElementById('skillGrid');
+			if (!grid) return;
+			grid.innerHTML = '';
+
+			Object.values(window.skillsData || {}).forEach(s => {
+				if (!matchesSearch(s, searchVal)) return;
+				if (typeVal !== 'all' && s.type !== typeVal) return;
+				grid.appendChild(createCard(s));
+			});
+		}
+
+		function renderAbilities() {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			const allReqs = new Set();
+			Object.values(window.abilitiesData || {}).forEach(ab => {
+				if(ab.requirements) {
+					ab.requirements.forEach(r => {
+						if(r.type === 'skill') allReqs.add(r.variable);
+					});
+				}
+			});
+
+			filterBar.innerHTML = `
+            <input type="text" class="search-input" id="abSearch" placeholder="Search Abilities...">
+            <select class="filter-select" id="reqFilter">
+                <option value="all">All Requirements</option>
+                ${[...allReqs].map(r => `<option value="${r}">${r}</option>`).join('')}
+            </select>
+        `;
+
+			document.getElementById('abSearch')?.addEventListener('input', filterAbilities);
+			document.getElementById('reqFilter')?.addEventListener('change', filterAbilities);
+
+			const grid = document.createElement('div');
+			grid.id = "abGrid";
+			grid.className = 'card-grid';
+			container.appendChild(grid);
+			filterAbilities();
+		}
+
+		function filterAbilities() {
+			const searchInput = document.getElementById('abSearch');
+			const reqFilter = document.getElementById('reqFilter');
+
+			const searchVal = searchInput ? searchInput.value : '';
+			const reqVal = reqFilter ? reqFilter.value : 'all';
+
+			const grid = document.getElementById('abGrid');
+			if (!grid) return;
+			grid.innerHTML = '';
+
+			Object.values(window.abilitiesData || {}).forEach(ab => {
+				if (!matchesSearch(ab, searchVal)) return;
+
+				let matchReq = false;
+				if (reqVal === 'all') matchReq = true;
+				else if (ab.requirements) {
+					matchReq = ab.requirements.some(r => r.type === 'skill' && r.variable === reqVal);
+				}
+
+				if (!matchReq) return;
+
+				const card = createCard(ab);
+				if(ab.requirements) {
+					const tagDiv = document.createElement('div');
+					ab.requirements.forEach(r => {
+						if(r.type === 'skill') tagDiv.innerHTML += `<span class="tag req">${r.variable} (${r.amount})</span>`;
+					});
+					card.querySelector('.card-body')?.prepend(tagDiv);
+				}
+				grid.appendChild(card);
+			});
+		}
+
+		function renderGenericCards(dataSet, typeLabel, tabId) {
+			const container = document.getElementById('contentArea');
+			const filterBar = document.getElementById('filterBar');
+			if (!container || !filterBar) return;
+
+			currentGenericData = dataSet || {};
+
+			filterBar.innerHTML = `<input type="text" class="search-input" id="genericSearch" placeholder="Search...">`;
+
+			document.getElementById('genericSearch')?.addEventListener('input', () => filterGeneric(tabId));
+
+			const grid = document.createElement('div');
+			grid.id = 'genericGrid';
+			grid.className = 'card-grid';
+			container.appendChild(grid);
+
+			filterGeneric(tabId);
+		}
+
+		function filterGeneric(tabId) {
+			const searchInput = document.getElementById('genericSearch');
+			const searchVal = searchInput ? searchInput.value : '';
+			const grid = document.getElementById('genericGrid');
+			if (!grid) return;
+			grid.innerHTML = '';
+
+			Object.entries(currentGenericData).forEach(([key, item]) => {
+				if(!item.name) item.name = key;
+				if (!matchesSearch(item, searchVal)) return;
+				grid.appendChild(createCard(item));
+			});
+		}
+
+		function createCard(dataObj) {
+			const card = document.createElement('div');
+			card.className = 'card';
+
+			const title = dataObj.name || "Unknown";
+			let subtitle = dataObj.factionType || dataObj.type || dataObj.region || "";
+			const bodyText = dataObj.basicInfo || dataObj.description || dataObj.text || "";
+			let hiddenBadge = dataObj.hiddenInfo ? `<span class="tag tier" style="float:right">⚠ Secrets</span>` : "";
+
+			card.innerHTML = `
+            <div class="card-header">
+                <h3 class="card-title">${title} ${hiddenBadge}</h3>
+                <div class="card-subtitle">${subtitle}</div>
+            </div>
+            <div class="card-body">
+                <div style="display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;">${bodyText}</div>
+            </div>
+        `;
+			card.addEventListener('click', () => showDetails(dataObj));
+			return card;
+		}
+
+		// ==========================================
+		// MODAL LOGIC
+		// ==========================================
+		function showDetails(data) {
+			const modal = document.getElementById('detailModal');
+			const body = document.getElementById('modalBody');
+			if (!modal || !body) return;
+			body.innerHTML = '';
+
+			const h2 = document.createElement('h2');
+			h2.innerText = data.name || "Details";
+			h2.style.color = "var(--accent)";
+			body.appendChild(h2);
+
+			body.appendChild(renderObjectContents(data));
+			modal.classList.add('open');
+		}
+
+		function renderObjectContents(obj, depth = 0) {
+			const container = document.createElement('div');
+
+			Object.entries(obj).forEach(([key, value]) => {
+				if (key === 'name' && depth === 0) return;
+				if (key === 'embeddingId' || key === 'x' || key === 'y') return;
+				if (value === null || value === undefined || value === "") return;
+
+				const row = document.createElement('div');
+				row.className = 'detail-row';
+				if(depth > 0) row.style.borderBottom = "none";
+
+				if (key === 'requirements' && Array.isArray(value)) {
+					row.innerHTML = `<span class="detail-key">Requirements</span>`;
+					const list = document.createElement('ul');
+					list.style.margin = "5px 0 0 20px";
+					list.style.padding = "0";
+					value.forEach(req => {
+						const li = document.createElement('li');
+						li.style.color = "var(--text-main)";
+						if(req.type === 'skill') {
+							li.innerText = `${prettifyKey(req.variable)}: ${req.amount}`;
+						} else {
+							li.innerText = `${req.variable || 'Unknown'}: ${req.amount}`;
+						}
+						list.appendChild(li);
+					});
+					row.appendChild(list);
+					container.appendChild(row);
+					return;
+				}
+
+				if (key === 'hiddenInfo') {
+					const hiddenContainer = document.createElement('div');
+					hiddenContainer.className = 'hidden-info-container';
+					hiddenContainer.innerHTML = `<span class="hidden-label">SECRET KNOWLEDGE (Click to Reveal)</span>`;
+
+					const blurText = document.createElement('div');
+					blurText.className = 'blurred-text';
+					blurText.innerHTML = formatText(value);
+					blurText.addEventListener('click', () => blurText.classList.toggle('revealed'));
+
+					hiddenContainer.appendChild(blurText);
+					row.appendChild(hiddenContainer);
+					container.appendChild(row);
+					return;
+				}
+
+				if (Array.isArray(value)) {
+					row.innerHTML = `<span class="detail-key">${prettifyKey(key)}</span>`;
+					const tagDiv = document.createElement('div');
+					value.forEach(v => {
+						if(typeof v === 'string') tagDiv.innerHTML += `<span class="tag">${v}</span>`;
+					});
+					if(tagDiv.innerHTML === '') {
+						const listDiv = document.createElement('div');
+						listDiv.style.marginLeft = "20px";
+						value.forEach(item => listDiv.appendChild(renderObjectContents(item, depth+1)));
+						row.appendChild(listDiv);
+					} else {
+						row.appendChild(tagDiv);
+					}
+					container.appendChild(row);
+					return;
+				}
+
+				if (typeof value === 'object') {
+					row.innerHTML = `<span class="detail-key">${prettifyKey(key)}</span>`;
+					const nestedDiv = document.createElement('div');
+					nestedDiv.style.marginLeft = "20px";
+					nestedDiv.style.paddingLeft = "10px";
+					nestedDiv.style.borderLeft = "2px solid #444";
+					nestedDiv.appendChild(renderObjectContents(value, depth + 1));
+					row.appendChild(nestedDiv);
+					container.appendChild(row);
+					return;
+				}
+
+				row.innerHTML = `<span class="detail-key">${prettifyKey(key)}</span><div class="detail-value">${formatText(value)}</div>`;
+				container.appendChild(row);
+			});
+			return container;
+		}
+
+		function prettifyKey(key) { return key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase()); }
+		function formatText(str) { if (typeof str !== 'string') return str; return str.replace(/\n/g, '<br>'); }
+
+		function closeModal() {
+			const modal = document.getElementById('detailModal');
+			if (modal) modal.classList.remove('open');
+		}
+
+		// --- START APP ---
+		initEvents();
+
+		// Verify data presence and start initial render
+		if (Object.keys(window.atlasData).length > 0) {
+			renderAtlas();
+		} else {
+			console.warn("APP: atlasData is empty. Check database key 'alunaria-codex'.");
+		}
+	</script>
+</Layout>

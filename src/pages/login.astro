@@ -1,0 +1,114 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Admin Login">
+    <div class="login-container">
+        <div class="login-box">
+            <h1>Codex Admin</h1>
+            <p>Please enter the password to continue.</p>
+
+            <input type="password" id="passwordInput" placeholder="Password" />
+            <button id="loginBtn">Login</button>
+            <div id="errorMsg" class="error"></div>
+
+            <a href="/">&larr; Back to Codex</a>
+        </div>
+    </div>
+
+    <style>
+        .login-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width:100%;
+            background-color: var(--bg-dark);
+        }
+        .login-box {
+            background-color: var(--bg-panel);
+            padding: 40px;
+            border-radius: 8px;
+            border: 1px solid var(--grid-line);
+            text-align: center;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        h1 { color: var(--accent); margin-top: 0; }
+        p { color: var(--text-muted); margin-bottom: 25px; }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 15px;
+            background-color: var(--bg-dark);
+            border: 1px solid var(--grid-line);
+            color: var(--text-main);
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        input:focus { outline: 1px solid var(--accent); }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--accent);
+            color: #000;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+        button:hover { background-color: var(--accent-dim); color: white; }
+
+        .error { color: var(--danger); min-height: 20px; margin-bottom: 15px; font-size: 0.9rem; }
+        a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; }
+        a:hover { color: var(--text-main); }
+    </style>
+
+    <script>
+        const loginBtn = document.getElementById('loginBtn');
+        const passwordInput = document.getElementById('passwordInput') as HTMLInputElement;
+        const errorMsg = document.getElementById('errorMsg');
+
+        // Handle the login attempt
+        async function attemptLogin() {
+            const password = passwordInput.value;
+            if (!password) return;
+
+            errorMsg.innerText = '';
+            loginBtn.innerText = 'Checking...';
+
+            try {
+                const res = await fetch('/api/auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    // Success! Redirect them to the admin panel
+                    window.location.href = '/admin';
+                } else {
+                    errorMsg.innerText = data.error || "Login failed";
+                    loginBtn.innerText = 'Login';
+                }
+            } catch (err) {
+                errorMsg.innerText = "Network error occurred.";
+                loginBtn.innerText = 'Login';
+            }
+        }
+
+        loginBtn?.addEventListener('click', attemptLogin);
+
+        // Allow pressing "Enter" to submit
+        passwordInput?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') attemptLogin();
+        });
+    </script>
+</Layout>
